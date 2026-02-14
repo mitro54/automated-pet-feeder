@@ -13,7 +13,7 @@ from socketserver import ThreadingMixIn
 TRIGGER_PIN = 17
 STREAM_PORT = 8080
 WEB_PORT = 8000
-BASE_DIR = "/home/mv/stream_save"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Use current script directory
 STABLE_DIR = os.path.join(BASE_DIR, "stable_run")  # What the website sees
 TEMP_DIR = os.path.join(BASE_DIR, "temp_recording") # Where we record to
 SNAPSHOT_URL = f"http://localhost:{STREAM_PORT}/?action=snapshot"
@@ -50,7 +50,7 @@ class WebHandler(SimpleHTTPRequestHandler):
         try:
             request_line = str(args[0])
             status_code = str(args[1])
-            if ".jpg" in request_line or "snapshot" in request_line: return
+            if ".jpg" in request_line or "snapshot" in request_line or "favicon.ico" in request_line: return
             if "GET / " in request_line and status_code == "304": return
             print(f"[WEB] {self.client_address[0]} - {format % args}")
         except Exception:

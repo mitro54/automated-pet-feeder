@@ -123,6 +123,42 @@
                 opacity: 1;
             }
         }
+
+        @keyframes flash-green {
+            0% {
+                background-color: #0d0d0d;
+            }
+
+            50% {
+                background-color: #1b5e20;
+            }
+
+            100% {
+                background-color: #0d0d0d;
+            }
+        }
+
+        .flash-success {
+            animation: flash-green 0.5s ease-out;
+        }
+
+        @keyframes flash-green {
+            0% {
+                background-color: #0d0d0d;
+            }
+
+            50% {
+                background-color: #1b5e20;
+            }
+
+            100% {
+                background-color: #0d0d0d;
+            }
+        }
+
+        .flash-success {
+            animation: flash-green 0.5s ease-out;
+        }
     </style>
 </head>
 
@@ -166,7 +202,11 @@
             if (currentManualMode) {
                 // In Manual Mode: Primary Button = TRIGGER FEED
                 if (confirm("Are you sure you want to trigger the feeder now?")) {
-                    fetch('/trigger_feed').then(() => alert("Feed Triggered!"));
+                    fetch('/trigger_feed').then(() => {
+                        // Visual feedback instead of alert
+                        document.body.classList.add('flash-success');
+                        setTimeout(() => document.body.classList.remove('flash-success'), 500);
+                    });
                 }
             } else {
                 // In Idle Mode: Primary Button = START MANUAL
@@ -211,10 +251,21 @@
         // --- SYSTEM CHECKER ---
         let lastServerRunTime = 0;
         let isCheckInProgress = false;
+        let lastCheckTime = 0;
 
         function checkStatus() {
-            if (isCheckInProgress) return;
+            // Safety: Reset lock if it's been stuck for > 4 seconds
+            if (isCheckInProgress) {
+                if (Date.now() - lastCheckTime > 4000) {
+                    console.warn("Polling stuck. Resetting lock.");
+                    isCheckInProgress = false;
+                } else {
+                    return;
+                }
+            }
+
             isCheckInProgress = true;
+            lastCheckTime = Date.now();
 
             fetch('/status')
                 .then(r => r.json())
