@@ -131,6 +131,11 @@ class SurveillanceSystem:
 
     def start_streamer(self):
         """Starts mjpg_streamer and waits for it to stabilize."""
+        # Optimization: If already running and healthy, don't restart!
+        if self.streamer_process and self.streamer_process.poll() is None:
+            print("[SYS] Streamer already running. Reusing...")
+            return
+
         self.stop_streamer() 
         time.sleep(2.0) # Increased from 0.5s to ensure /dev/video0 is released
         # Using preexec_fn=os.setsid specifically for Linux process group management
@@ -149,6 +154,7 @@ class SurveillanceSystem:
                 except:
                     pass
         subprocess.call("pkill -f mjpg_streamer", shell=True)
+        self.streamer_process = None # Clear the object
         time.sleep(0.5) # Extra cleanup time
 
     def trigger_lights(self, on=True):
@@ -223,14 +229,23 @@ class SurveillanceSystem:
         self.start_streamer()
         # self.trigger_lights(on=True) # DISABLED per user request
         
+        should_keep_stream_alive = False
+
         while True:
             with state_lock:
                 if state.manual_stop_requested: break
+                # Check if we are exiting because of a trigger request
+                if state.trigger_feed_requested:
+                     should_keep_stream_alive = True
+                     break
             time.sleep(0.5)
         
-        print("[MANUAL] Stopping...")
+        print(f"[MANUAL] Stopping... (Keep Alive: {should_keep_stream_alive})")
         # self.trigger_lights(on=False) # DISABLED
-        self.stop_streamer()
+        
+        if not should_keep_stream_alive:
+            self.stop_streamer()
+            
         with state_lock:
             state.manual_mode = False
             state.manual_stop_requested = False
