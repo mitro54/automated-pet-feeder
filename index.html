@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Guard</title>
+    <style>
+        body {
+            background: #0d0d0d;
+            color: #fff;
+            font-family: sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+        }
+
+        /* Status Indicators */
+        #status-bar {
+            padding: 15px;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            background: #333;
+        }
+
+        .live {
+            background: #d32f2f !important;
+            animation: pulse 2s infinite;
+        }
+
+        .idle {
+            background: #2e7d32 !important;
+        }
+
+        /* Viewer */
+        .viewer {
+            position: relative;
+            width: 100%;
+            border: 2px solid #333;
+            min-height: 480px;
+            background: #000;
+        }
+
+        img {
+            width: 100%;
+            display: block;
+        }
+
+        /* Controls */
+        .controls {
+            margin-top: 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* Mobile Responsiveness */
+        @media (max-width: 600px) {
+            .controls {
+                grid-template-columns: 1fr;
+            }
+
+            .viewer {
+                min-height: 240px;
+            }
+
+            body {
+                padding: 10px;
+            }
+        }
+
+        button {
+            padding: 15px;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+            cursor: pointer;
+            color: white;
+            width: 100%;
+            font-size: 16px;
+        }
+
+        .btn-blue {
+            background: #1976d2;
+        }
+
+        .btn-red {
+            background: #d32f2f;
+        }
+
+        .btn-green {
+            background: #2e7d32;
+        }
+
+        .btn-orange {
+            background: #f57c00;
+        }
+
+        .btn-purple {
+            background: #7b1fa2;
+        }
+
+        button:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.8;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div id="status-bar" class="idle">System Idle - Last Capture</div>
+
+        <div class="viewer">
+            <img id="cam-feed" src="" alt="Loading..." />
+        </div>
+        <p id="frame-counter">Frame: 0 / 150</p>
+
+        <div class="controls">
+            <button id="btn-primary" class="btn-blue" onclick="handlePrimary()">MANUAL LIVE MODE</button>
+            <button id="btn-secondary" class="btn-green" onclick="handleSecondary()">RESUME AUTO</button>
+        </div>
+    </div>
+
+    <script>
+        const PI_IP = window.location.hostname;
+        const STREAM_PORT = "8080";
+        const IMG_El = document.getElementById("cam-feed");
+        const STATUS_El = document.getElementById("status-bar");
+        const COUNTER_El = document.getElementById("frame-counter");
+
+        // Dynamic Buttons
+        const BTN_Primary = document.getElementById("btn-primary");
+        const BTN_Secondary = document.getElementById("btn-secondary");
+
+        let isLive = false;
+        let replayIndex = 1;
+        let replayTimer = null;
+        let cacheBuster = Date.now();
+
+        // State tracking for buttons
+        let currentManualMode = false;
+        let currentAutoEnabled = true;
+
+        // --- ACTIONS ---
+        function handlePrimary() {
+            if (currentManualMode) {
+                // In Manual Mode: Primary Button = TRIGGER FEED
+                if (confirm("Are you sure you want to trigger the feeder now?")) {
+                    fetch('/trigger_feed').then(() => alert("Feed Triggered!"));
+                }
+            } else {
+                // In Idle Mode: Primary Button = START MANUAL
+                fetch('/start_manual');
+                STATUS_El.innerText = "STARTING MANUAL MODE...";
+            }
+        }
+
+        function handleSecondary() {
+            if (currentManualMode) {
+                // In Manual Mode: Secondary Button = STOP MANUAL
+                fetch('/stop_manual');
+                STATUS_El.innerText = "STOPPING...";
+            } else {
+                // In Idle Mode: Secondary Button = TOGGLE AUTO
+                fetch('/toggle_auto');
+            }
+        }
+
+        // --- FLIPBOOK PLAYER ---
+        function playRecording() {
+            if (isLive) return;
+
+            let num = String(replayIndex).padStart(3, '0');
+            let path = `stable_run/img_${num}.jpg?v=${cacheBuster}`;
+
+            let img = new Image();
+            img.src = path;
+            img.onload = () => {
+                if (isLive) return;
+                IMG_El.src = path;
+                COUNTER_El.innerText = `Replay Frame: ${replayIndex}`;
+                replayIndex++;
+                if (replayIndex > 150) replayIndex = 1;
+            };
+            img.onerror = () => {
+                if (replayIndex === 1) COUNTER_El.innerText = "No recordings found.";
+                replayIndex = 1;
+            };
+        }
+
+        // --- SYSTEM CHECKER ---
+        let lastServerRunTime = 0;
+        let isCheckInProgress = false;
+
+        function checkStatus() {
+            if (isCheckInProgress) return;
+            isCheckInProgress = true;
+
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                    currentManualMode = data.manual_mode;
+                    currentAutoEnabled = data.auto_enabled;
+
+                    // Button Logic:
+                    if (currentManualMode) {
+                        // PRIMARY -> TRIGGER FEED
+                        BTN_Primary.innerText = "TRIGGER FEED NOW";
+                        BTN_Primary.className = "btn-purple";
+
+                        // SECONDARY -> STOP MANUAL
+                        BTN_Secondary.innerText = "STOP MANUAL MODE";
+                        BTN_Secondary.className = "btn-red";
+                    } else {
+                        // PRIMARY -> START MANUAL
+                        BTN_Primary.innerText = "MANUAL LIVE MODE";
+                        BTN_Primary.className = "btn-blue";
+
+                        // SECONDARY -> TOGGLE AUTO
+                        if (currentAutoEnabled) {
+                            BTN_Secondary.innerText = "PAUSE AUTO";
+                            BTN_Secondary.className = "btn-orange";
+                        } else {
+                            BTN_Secondary.innerText = "RESUME AUTO";
+                            BTN_Secondary.className = "btn-green";
+                        }
+                    }
+
+                    // New Recording Check
+                    if (data.last_run_time > lastServerRunTime) {
+                        if (lastServerRunTime !== 0) {
+                            cacheBuster = Date.now();
+                            replayIndex = 1;
+                        }
+                        lastServerRunTime = data.last_run_time;
+                    }
+                })
+                .catch(err => console.log("Status error", err));
+
+            // Live Stream Check
+            let testImg = new Image();
+            testImg.src = `http://${PI_IP}:${STREAM_PORT}/?action=snapshot&t=${Date.now()}`;
+
+            testImg.onload = () => {
+                isCheckInProgress = false;
+                if (!isLive) {
+                    isLive = true;
+                    clearInterval(replayTimer);
+                    STATUS_El.className = "live";
+                    STATUS_El.innerText = "● LIVE FEED ACTIVE";
+                    IMG_El.src = `http://${PI_IP}:${STREAM_PORT}/?action=stream`;
+                }
+            };
+
+            testImg.onerror = () => {
+                isCheckInProgress = false;
+                if (isLive) {
+                    isLive = false;
+                    STATUS_El.className = "idle";
+                    STATUS_El.innerText = "System Idle - Last Capture";
+                    cacheBuster = Date.now();
+                    replayTimer = setInterval(playRecording, 100);
+                }
+            };
+        }
+
+        replayTimer = setInterval(playRecording, 100);
+        setInterval(checkStatus, 2000);
+
+    </script>
+</body>
+
+</html>
