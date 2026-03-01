@@ -126,6 +126,7 @@ class SystemState:
         self.run_interval: int = 86400          # 24 h (production)
         self.auto_enabled: bool = True
         self.trigger_feed_requested: bool = False
+        self.busy: bool = False
 
 
 state = SystemState()
@@ -163,6 +164,25 @@ class WebHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         try:
             with state_lock:
+                # Gate action endpoints behind the busy flag.
+                # Allow /stop_manual and /trigger_feed through during
+                # manual mode — they are interrupt signals, not new
+                # actions.
+                is_manual_interrupt = (
+                    state.manual_mode
+                    and self.path in ("/stop_manual", "/trigger_feed")
+                )
+                if (
+                    state.busy
+                    and not is_manual_interrupt
+                    and self.path in (
+                        "/start_manual", "/stop_manual",
+                        "/toggle_auto", "/trigger_feed",
+                    )
+                ):
+                    self._conflict()
+                    return
+
                 if self.path == "/start_manual":
                     state.manual_mode = True
                     state.manual_stop_requested = False
@@ -216,11 +236,17 @@ class WebHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def _conflict(self) -> None:
+        """Return 409 Conflict when the system is busy."""
+        self.send_response(409)
+        self.end_headers()
+
     def _send_status(self) -> None:
         payload = json.dumps({
             "manual_mode": state.manual_mode,
             "auto_enabled": state.auto_enabled,
             "last_run_time": state.last_run_time,
+            "busy": state.busy,
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -329,20 +355,37 @@ class SurveillanceSystem:
     _FEED_FRAME = 5
     # Extra seconds the LED stays on after the motor finishes.
     _LED_LINGER_SECS = 2.0
+    # Minimum fraction of frames required to accept a recording.
+    _MIN_FRAME_RATIO = 0.5
+
+    def _check_streamer_health(self) -> None:
+        """Restart the streamer if it has crashed (e.g. segfault)."""
+        if (
+            self.streamer_process is not None
+            and self.streamer_process.poll() is not None
+        ):
+            print("[REC] Streamer died mid-recording. Restarting …")
+            self.start_streamer()
 
     def record_sequence(self) -> None:
         """Record ~15 s of footage and dispense food mid-sequence.
 
         The motor runs in a background thread so the camera keeps
-        capturing frames during the rotation (~1 s).
+        capturing frames during the rotation (~1 s).  If the streamer
+        crashes (e.g. browser disconnect causes a segfault) it is
+        automatically restarted so capture can continue.
+
+        The buffer swap only proceeds when at least 50 % of the
+        expected frames were captured; otherwise the previous
+        recording is preserved.
 
         Timeline:
           frames 1-4   : camera rolling, LED off (pre-action footage)
-          frame  5     : LED on → motor starts rotating (background)
+          frame  5     : LED on -> motor starts rotating (background)
           frames 5-N   : frames captured *while* motor is still turning
           frames N-N+22: LED lingers ~2 s after motor thread completes
           frame  N+23  : LED off
-          frames …-150 : remaining post-action footage
+          frames ..150 : remaining post-action footage
         """
         print("[REC] Starting Sequence …")
 
@@ -352,15 +395,19 @@ class SurveillanceSystem:
 
         led_off_frame = None
         motor_thread = None
+        captured_frames = 0
+        target_frames = 150
+        frame_delay = 0.09
 
         try:
             self.start_streamer()
-            target_frames = 150
-            frame_delay = 0.09
 
             print("[REC] Camera Ready. Recording …")
 
             for i in range(1, target_frames + 1):
+                # --- Streamer health check ----------------------------
+                self._check_streamer_health()
+
                 # --- LED on + motor (non-blocking) at the feed frame --
                 if i == self._FEED_FRAME:
                     self.set_led(on=True)
@@ -391,6 +438,7 @@ class SurveillanceSystem:
                     ) as resp:
                         with open(filename, "wb") as fh:
                             fh.write(resp.read())
+                    captured_frames += 1
                 except Exception:
                     pass
 
@@ -403,7 +451,17 @@ class SurveillanceSystem:
             self.set_led(on=False)
             self.stop_streamer()
 
-        # Atomic buffer swap — retry to wait out web-server file locks.
+        # Only swap if we captured enough frames to be useful.
+        min_frames = int(target_frames * self._MIN_FRAME_RATIO)
+        if captured_frames < min_frames:
+            print(
+                f"[REC] Too few frames captured ({captured_frames}/"
+                f"{target_frames}). Keeping previous recording."
+            )
+            self._safe_rmtree(TEMP_DIR)
+            return
+
+        # Atomic buffer swap - retry to wait out web-server file locks.
         print("[REC] Swapping buffers …")
         trash_dir = os.path.join(BASE_DIR, "trash_bin")
         self._safe_rmtree(trash_dir)
@@ -420,8 +478,8 @@ class SurveillanceSystem:
         print("[REC] Sequence Complete. Buffer Updated.")
 
     @staticmethod
-    def _safe_rmtree(path: str, retries: int = 3) -> None:
-        """Remove a directory tree, retrying on permission errors.
+    def _safe_rmtree(path: str, retries: int = 5) -> None:
+        """Remove a directory tree, retrying on OS-level errors.
 
         The web-server thread may hold transient file handles on images
         being served; a short back-off is enough to let them close.
@@ -432,9 +490,9 @@ class SurveillanceSystem:
             try:
                 shutil.rmtree(path)
                 return
-            except PermissionError:
+            except OSError:
                 if attempt < retries - 1:
-                    time.sleep(0.5)
+                    time.sleep(1.0)
                 else:
                     print(f"[WARN] Could not remove {path} after "
                           f"{retries} attempts, skipping.")
@@ -470,6 +528,14 @@ class SurveillanceSystem:
 
     # -- main loop -----------------------------------------------------
 
+    @staticmethod
+    def _drain_requests() -> None:
+        """Clear any requests that piled up while the system was busy."""
+        with state_lock:
+            state.trigger_feed_requested = False
+            state.manual_mode = False
+            state.manual_stop_requested = False
+
     def loop(self) -> None:
         """Main logic loop - polls state and dispatches actions."""
         print("[SYS] System Online. Waiting …")
@@ -494,17 +560,24 @@ class SurveillanceSystem:
                         should_record = True
 
                 if should_manual:
+                    with state_lock:
+                        state.busy = True
                     self.run_manual_mode()
                     with state_lock:
                         state.last_run_time = time.time()
+                        state.busy = False
+                    # Do NOT drain here — trigger_feed_requested may
+                    # have been set to transition into a feed sequence.
 
                 elif should_feed:
                     print("[SYS] Manual Feed Triggered!")
-                    # Stamp time *before* the action so a mid-run
-                    # crash cannot cause infinite rapid retries.
                     with state_lock:
+                        state.busy = True
                         state.last_run_time = time.time()
                     self.record_sequence()
+                    with state_lock:
+                        state.busy = False
+                    self._drain_requests()
 
                 elif should_record:
                     print(
@@ -512,13 +585,19 @@ class SurveillanceSystem:
                         f"(Interval: {state.run_interval}s)"
                     )
                     with state_lock:
+                        state.busy = True
                         state.last_run_time = time.time()
                     self.record_sequence()
+                    with state_lock:
+                        state.busy = False
+                    self._drain_requests()
 
                 time.sleep(1)
 
             except Exception as exc:
                 print(f"[CRITICAL] Main Loop Crash: {exc}")
+                with state_lock:
+                    state.busy = False
                 time.sleep(5)
 
 
