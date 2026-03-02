@@ -3,7 +3,7 @@
 # Intended for use with cron on a Raspberry Pi.
 #
 # Cron entry (run `crontab -e` and add):
-#   0 18 * * * /home/mv/stream_save/feed.sh >> /home/mv/stream_save/scheduled_feeds.log 2>&1
+#   0 18 * * * /home/user/pet_feeder/feed.sh >> /home/user/pet_feeder/scheduled_feeds.log 2>&1
 #
 # Make sure the system timezone is set to Europe/Helsinki:
 #   sudo timedatectl set-timezone Europe/Helsinki
