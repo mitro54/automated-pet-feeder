@@ -1,5 +1,5 @@
 # automated-pet-feeder
-**This is a small personal project running on a Raspberry Pi to allow pet to get some treats when the owner is away.**
+**This is a small personal project running on a Raspberry Pi to allow pet to get some treats while the owner is away.**
 
 ## Setup
 
