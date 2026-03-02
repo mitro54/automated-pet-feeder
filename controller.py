@@ -63,7 +63,7 @@ HALF_STEP_SEQUENCE = [
 ]
 
 STEPS_PER_REVOLUTION = 4096
-STEP_DELAY = 0.001  # 1 ms – safe for 5 V operation
+STEP_DELAY = 0.002 # 2 ms
 
 
 class StepperMotor:
