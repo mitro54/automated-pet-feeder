@@ -122,9 +122,6 @@ class SystemState:
     def __init__(self) -> None:
         self.manual_mode: bool = False
         self.manual_stop_requested: bool = False
-        self.last_run_time: float = 0.0
-        self.run_interval: int = 86400          # 24 h (production)
-        self.auto_enabled: bool = True
         self.trigger_feed_requested: bool = False
         self.busy: bool = False
 
@@ -159,6 +156,15 @@ class WebHandler(SimpleHTTPRequestHandler):
         except Exception:
             pass
 
+    def end_headers(self) -> None:
+        """Inject no-cache headers for images and the main page."""
+        if self.path.endswith((".jpg", ".html")):
+            self.send_header(
+                "Cache-Control",
+                "no-store, no-cache, must-revalidate",
+            )
+        super().end_headers()
+
     # -- request routing -----------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
@@ -177,7 +183,7 @@ class WebHandler(SimpleHTTPRequestHandler):
                     and not is_manual_interrupt
                     and self.path in (
                         "/start_manual", "/stop_manual",
-                        "/toggle_auto", "/trigger_feed",
+                        "/trigger_feed",
                     )
                 ):
                     self._conflict()
@@ -194,14 +200,6 @@ class WebHandler(SimpleHTTPRequestHandler):
                     self._ok()
                     return
 
-                if self.path == "/toggle_auto":
-                    state.auto_enabled = not state.auto_enabled
-                    print(
-                        f"[SYS] Auto-Recording set to: {state.auto_enabled}"
-                    )
-                    self._ok()
-                    return
-
                 if self.path == "/trigger_feed":
                     state.trigger_feed_requested = True
                     if state.manual_mode:
@@ -213,15 +211,6 @@ class WebHandler(SimpleHTTPRequestHandler):
                 if self.path == "/status":
                     self._send_status()
                     return
-
-            # Disable caching for images and the main page.
-            if self.path.endswith((".jpg", ".html")):
-                self.send_response(200)
-                self.send_header(
-                    "Cache-Control",
-                    "no-store, no-cache, must-revalidate",
-                )
-                self.end_headers()
 
             super().do_GET()
 
@@ -244,8 +233,6 @@ class WebHandler(SimpleHTTPRequestHandler):
     def _send_status(self) -> None:
         payload = json.dumps({
             "manual_mode": state.manual_mode,
-            "auto_enabled": state.auto_enabled,
-            "last_run_time": state.last_run_time,
             "busy": state.busy,
         }).encode()
         self.send_response(200)
@@ -536,13 +523,18 @@ class SurveillanceSystem:
             state.manual_mode = False
             state.manual_stop_requested = False
 
+
     def loop(self) -> None:
-        """Main logic loop - polls state and dispatches actions."""
-        print("[SYS] System Online. Waiting …")
+        """Main logic loop - polls state and dispatches actions.
+
+        Scheduled feeding is handled externally by cron hitting the
+        /trigger_feed endpoint.  This loop only reacts to manual-mode
+        and trigger-feed requests.
+        """
+        print("[SYS] System Online. Waiting for commands …")
 
         while True:
             try:
-                should_record = False
                 should_manual = False
                 should_feed = False
 
@@ -552,41 +544,20 @@ class SurveillanceSystem:
                     elif state.trigger_feed_requested:
                         should_feed = True
                         state.trigger_feed_requested = False
-                    elif (
-                        state.auto_enabled
-                        and (time.time() - state.last_run_time)
-                        > state.run_interval
-                    ):
-                        should_record = True
 
                 if should_manual:
                     with state_lock:
                         state.busy = True
                     self.run_manual_mode()
                     with state_lock:
-                        state.last_run_time = time.time()
                         state.busy = False
                     # Do NOT drain here — trigger_feed_requested may
                     # have been set to transition into a feed sequence.
 
                 elif should_feed:
-                    print("[SYS] Manual Feed Triggered!")
+                    print("[SYS] Feed Triggered!")
                     with state_lock:
                         state.busy = True
-                        state.last_run_time = time.time()
-                    self.record_sequence()
-                    with state_lock:
-                        state.busy = False
-                    self._drain_requests()
-
-                elif should_record:
-                    print(
-                        f"[SYS] Auto-Schedule Triggered "
-                        f"(Interval: {state.run_interval}s)"
-                    )
-                    with state_lock:
-                        state.busy = True
-                        state.last_run_time = time.time()
                     self.record_sequence()
                     with state_lock:
                         state.busy = False

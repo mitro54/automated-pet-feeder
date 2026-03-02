@@ -173,7 +173,8 @@
 
         <div class="controls">
             <button id="btn-primary" class="btn-blue" onclick="handlePrimary()">MANUAL LIVE MODE</button>
-            <button id="btn-secondary" class="btn-green" onclick="handleSecondary()">RESUME AUTO</button>
+            <button id="btn-secondary" class="btn-red" onclick="handleSecondary()" style="display:none">STOP MANUAL
+                MODE</button>
         </div>
     </div>
 
@@ -195,7 +196,6 @@
 
         // State tracking for buttons
         let currentManualMode = false;
-        let currentAutoEnabled = true;
 
         // --- ACTIONS ---
         function handlePrimary() {
@@ -220,9 +220,6 @@
                 // In Manual Mode: Secondary Button = STOP MANUAL
                 fetch('/stop_manual');
                 STATUS_El.innerText = "STOPPING...";
-            } else {
-                // In Idle Mode: Secondary Button = TOGGLE AUTO
-                fetch('/toggle_auto');
             }
         }
 
@@ -271,39 +268,16 @@
                 .then(r => r.json())
                 .then(data => {
                     currentManualMode = data.manual_mode;
-                    currentAutoEnabled = data.auto_enabled;
 
                     // Button Logic:
                     if (currentManualMode) {
-                        // PRIMARY -> TRIGGER FEED
                         BTN_Primary.innerText = "TRIGGER FEED NOW";
                         BTN_Primary.className = "btn-purple";
-
-                        // SECONDARY -> STOP MANUAL
-                        BTN_Secondary.innerText = "STOP MANUAL MODE";
-                        BTN_Secondary.className = "btn-red";
+                        BTN_Secondary.style.display = "";
                     } else {
-                        // PRIMARY -> START MANUAL
                         BTN_Primary.innerText = "MANUAL LIVE MODE";
                         BTN_Primary.className = "btn-blue";
-
-                        // SECONDARY -> TOGGLE AUTO
-                        if (currentAutoEnabled) {
-                            BTN_Secondary.innerText = "PAUSE AUTO";
-                            BTN_Secondary.className = "btn-orange";
-                        } else {
-                            BTN_Secondary.innerText = "RESUME AUTO";
-                            BTN_Secondary.className = "btn-green";
-                        }
-                    }
-
-                    // New Recording Check
-                    if (data.last_run_time > lastServerRunTime) {
-                        if (lastServerRunTime !== 0) {
-                            cacheBuster = Date.now();
-                            replayIndex = 1;
-                        }
-                        lastServerRunTime = data.last_run_time;
+                        BTN_Secondary.style.display = "none";
                     }
                 })
                 .catch(err => console.log("Status error", err));
