@@ -49,4 +49,4 @@ WantedBy=multi-user.target
 0 18 * * * /home/user/pet_feeder/feed.sh >> /home/user/pet_feeder/scheduled_feeds.log 2>&1
 ```
 
-9. All set up! The feeder should now run as a service automatically on startup, accessible via http://localhost:8000 and the scheduled feed will be triggered at 6 PM every day.
+9. All set up! The feeder should now run as a service automatically on startup, accessible via http://localhost:8000 or http://<raspi-ip>:8000 and the scheduled feed will be triggered at 6 PM every day.
