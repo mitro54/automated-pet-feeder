@@ -1,5 +1,9 @@
 # automated-pet-feeder
-**This is a small personal project running on a Raspberry Pi to allow pet to get some treats while the owner is away.**
+**This is a small personal project running on a Raspberry Pi 1 to allow pet to get some treats while the owner is away.**
+
+The device is made out of 3D printed parts (PLA for all of the container/frame and soft TPU for the rotor to be pet safe) and uses a Raspi 1 to control the feeder. Basicly it has an old web camera and uses a servo motor to spin a 4 bladed rotor 90 degrees per run, that pushes the treats out of a container. The device has livestream capability and can be monitored and controlled via a web interface. Due to the limitation of the Raspi 1 performance, the saved "video" of the stream is actually a flipbook of images.
+
+![CAD render of the feeder](petfeeder1.jpg)
 
 ## Setup
 
