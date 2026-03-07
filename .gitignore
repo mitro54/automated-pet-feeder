@@ -1,3 +1,6 @@
+# PIN file (access control)
+.pin
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

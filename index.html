@@ -161,8 +161,6 @@
     </div>
 
     <script>
-        const PI_IP = window.location.hostname;
-        const STREAM_PORT = "8080";
         const IMG_El = document.getElementById("cam-feed");
         const STATUS_El = document.getElementById("status-bar");
         const COUNTER_El = document.getElementById("frame-counter");
@@ -298,7 +296,7 @@
 
             // Live Stream Check
             let testImg = new Image();
-            testImg.src = `http://${PI_IP}:${STREAM_PORT}/?action=snapshot&t=${Date.now()}`;
+            testImg.src = `/snapshot?t=${Date.now()}`;
 
             testImg.onload = () => {
                 isCheckInProgress = false;
@@ -308,7 +306,7 @@
                     replayTimer = null;
                     STATUS_El.className = "live";
                     STATUS_El.innerText = "● LIVE FEED ACTIVE";
-                    IMG_El.src = `http://${PI_IP}:${STREAM_PORT}/?action=stream`;
+                    IMG_El.src = `/stream`;
                 }
             };
 

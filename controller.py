@@ -5,8 +5,10 @@ directly from the Raspberry Pi GPIO.  Also serves a web UI for live
 camera streaming, recording playback, and manual feed control.
 """
 
+import hashlib
 import json
 import os
+import secrets
 import signal
 import shutil
 import subprocess
@@ -37,6 +39,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STABLE_DIR = os.path.join(BASE_DIR, "stable_run")
 TEMP_DIR = os.path.join(BASE_DIR, "temp_recording")
 SNAPSHOT_URL = f"http://localhost:{STREAM_PORT}/?action=snapshot"
+
+# Authentication
+PIN_FILE = os.path.join(BASE_DIR, ".pin")
+SESSION_COOKIE = "feeder_session"
 
 # Hardware commands
 STREAM_CMD = (
@@ -129,6 +135,138 @@ class SystemState:
 state = SystemState()
 
 # ──────────────────────────────────────────────────────────────────────
+# AUTHENTICATION
+# ──────────────────────────────────────────────────────────────────────
+
+_pin_hash: str = ""
+_valid_sessions: set = set()
+_auth_lock = threading.Lock()
+_login_attempts: dict = {}  # {ip: [fail_count, lockout_timestamp]}
+RATE_LIMIT_MAX = 5
+RATE_LIMIT_COOLDOWN = 600  # 10 minutes
+
+
+def _load_pin() -> None:
+    """Load the PIN from .pin file and store its hash."""
+    global _pin_hash
+    if not os.path.exists(PIN_FILE):
+        print("[AUTH] No .pin file found - access control DISABLED.")
+        return
+    with open(PIN_FILE) as f:
+        pin = f.read().strip()
+    if not pin.isdigit() or not (4 <= len(pin) <= 6):
+        print("[AUTH] PIN must be 4-6 digits. Access control DISABLED.")
+        return
+    _pin_hash = hashlib.sha256(pin.encode()).hexdigest()
+    print("[AUTH] PIN loaded. Access control enabled.")
+
+
+LOGIN_PAGE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pi Guard - Login</title>
+    <style>
+        body {
+            background: #0d0d0d;
+            color: #fff;
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-box {
+            text-align: center;
+            padding: 40px;
+            background: #1a1a1a;
+            border-radius: 10px;
+            border: 1px solid #333;
+            min-width: 280px;
+        }
+        h1 { margin: 0 0 8px; font-size: 28px; }
+        .subtitle { color: #888; margin: 0 0 24px; font-size: 14px; }
+        input {
+            padding: 15px;
+            font-size: 24px;
+            text-align: center;
+            letter-spacing: 8px;
+            background: #0d0d0d;
+            border: 2px solid #333;
+            border-radius: 5px;
+            color: #fff;
+            width: 180px;
+            display: block;
+            margin: 0 auto;
+        }
+        input:focus { border-color: #1976d2; outline: none; }
+        button {
+            display: block;
+            margin: 20px auto 0;
+            padding: 12px 40px;
+            background: #1976d2;
+            border: none;
+            border-radius: 5px;
+            color: #fff;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover { background: #1565c0; }
+        .error {
+            color: #d32f2f;
+            margin-top: 12px;
+            font-size: 14px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>Pi Guard</h1>
+        <p class="subtitle">Enter PIN to continue</p>
+        <form id="f">
+            <input type="password" id="p" maxlength="6"
+                   pattern="[0-9]*" inputmode="numeric"
+                   placeholder="----" autofocus>
+            <button type="submit">Enter</button>
+        </form>
+        <p class="error" id="e">Wrong PIN</p>
+    </div>
+    <script>
+        document.getElementById('f').onsubmit = async (e) => {
+            e.preventDefault();
+            const el = document.getElementById('e');
+            const inp = document.getElementById('p');
+            const r = await fetch('/auth', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({pin: inp.value})
+            });
+            if (r.ok) { location.reload(); }
+            else if (r.status === 429) {
+                el.textContent = 'Too many attempts. Try again in 10 minutes.';
+                el.style.display = 'block';
+                inp.value = '';
+                inp.disabled = true;
+                document.querySelector('button').disabled = true;
+            } else {
+                el.textContent = 'Wrong PIN';
+                el.style.display = 'block';
+                inp.value = '';
+                inp.focus();
+            }
+        };
+    </script>
+</body>
+</html>
+"""
+
+# ──────────────────────────────────────────────────────────────────────
 # WEB SERVER
 # ──────────────────────────────────────────────────────────────────────
 
@@ -141,6 +279,31 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class WebHandler(SimpleHTTPRequestHandler):
     """Custom handler for the control-panel API and static files."""
+
+    # -- authentication ------------------------------------------------
+
+    def _is_authenticated(self) -> bool:
+        """Check for a valid session cookie.  Localhost is always allowed."""
+        if not _pin_hash:
+            return True
+        if self.client_address[0] in ("127.0.0.1", "::1"):
+            return True
+        cookie_header = self.headers.get("Cookie", "")
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if part.startswith(f"{SESSION_COOKIE}="):
+                token = part[len(SESSION_COOKIE) + 1:]
+                return token in _valid_sessions
+        return False
+
+    def _serve_login_page(self) -> None:
+        """Send the PIN entry page."""
+        body = LOGIN_PAGE.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     # -- logging -------------------------------------------------------
 
@@ -167,8 +330,72 @@ class WebHandler(SimpleHTTPRequestHandler):
 
     # -- request routing -----------------------------------------------
 
+    def do_POST(self) -> None:  # noqa: N802
+        """Handle POST requests (authentication only)."""
+        try:
+            if self.path == "/auth":
+                ip = self.client_address[0]
+                now = time.time()
+
+                # --- Rate limiting ------------------------------------
+                with _auth_lock:
+                    if ip in _login_attempts:
+                        fails, lockout = _login_attempts[ip]
+                        if fails >= RATE_LIMIT_MAX and now < lockout:
+                            self.send_response(429)
+                            self.end_headers()
+                            print(f"[AUTH] Rate limited: {ip}")
+                            return
+                        if now >= lockout and fails >= RATE_LIMIT_MAX:
+                            del _login_attempts[ip]
+
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode()
+                data = json.loads(body)
+                pin = data.get("pin", "")
+                submitted = hashlib.sha256(pin.encode()).hexdigest()
+
+                if submitted == _pin_hash:
+                    token = secrets.token_hex(16)
+                    _valid_sessions.add(token)
+                    with _auth_lock:
+                        _login_attempts.pop(ip, None)
+                    self.send_response(200)
+                    self.send_header(
+                        "Set-Cookie",
+                        f"{SESSION_COOKIE}={token}; Path=/;"
+                        f" HttpOnly; SameSite=Strict",
+                    )
+                    self.end_headers()
+                    print(f"[AUTH] Login OK from {ip}")
+                else:
+                    with _auth_lock:
+                        fails, _ = _login_attempts.get(ip, (0, 0))
+                        fails += 1
+                        lockout = now + RATE_LIMIT_COOLDOWN if fails >= RATE_LIMIT_MAX else 0
+                        _login_attempts[ip] = (fails, lockout)
+                    self.send_response(401)
+                    self.end_headers()
+                    print(
+                        f"[AUTH] Failed login from {ip}"
+                        f" ({fails}/{RATE_LIMIT_MAX})"
+                    )
+                return
+            self.send_response(404)
+            self.end_headers()
+        except Exception as exc:
+            print(f"[ERR] POST Error: {exc}")
+
     def do_GET(self) -> None:  # noqa: N802
         try:
+            # --- Authentication gate ----------------------------------
+            if not self._is_authenticated():
+                if self.path == "/auth":
+                    pass  # handled by do_POST
+                else:
+                    self._serve_login_page()
+                    return
+
             with state_lock:
                 # Gate action endpoints behind the busy flag.
                 # Allow /stop_manual and /trigger_feed through during
@@ -212,6 +439,15 @@ class WebHandler(SimpleHTTPRequestHandler):
                     self._send_status()
                     return
 
+            # --- Stream proxy (authenticated) -------------------------
+            if self.path == "/stream":
+                self._proxy_stream()
+                return
+
+            if self.path.startswith("/snapshot"):
+                self._proxy_snapshot()
+                return
+
             super().do_GET()
 
         except (BrokenPipeError, ConnectionResetError):
@@ -240,6 +476,53 @@ class WebHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    # -- stream proxy --------------------------------------------------
+
+    def _proxy_stream(self) -> None:
+        """Proxy the MJPEG stream from the local streamer."""
+        stream_url = f"http://localhost:{STREAM_PORT}/?action=stream"
+        upstream = None
+        try:
+            upstream = urllib.request.urlopen(stream_url, timeout=5)
+            content_type = upstream.headers.get(
+                "Content-Type", "multipart/x-mixed-replace"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            while True:
+                chunk = upstream.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Client disconnected
+        except Exception:
+            try:
+                self.send_response(502)
+                self.end_headers()
+            except Exception:
+                pass
+        finally:
+            if upstream:
+                upstream.close()
+
+    def _proxy_snapshot(self) -> None:
+        """Proxy a single snapshot from the local streamer."""
+        try:
+            with urllib.request.urlopen(SNAPSHOT_URL, timeout=2) as resp:
+                data = resp.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_response(502)
+            self.end_headers()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -615,6 +898,7 @@ def _shutdown(system: SurveillanceSystem) -> None:
 
 def main() -> None:
     """Application entry point."""
+    _load_pin()
     system = SurveillanceSystem()
 
     # Register SIGTERM for graceful daemon shutdown.
