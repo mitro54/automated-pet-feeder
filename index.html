@@ -141,24 +141,6 @@
         .flash-success {
             animation: flash-green 0.5s ease-out;
         }
-
-        @keyframes flash-green {
-            0% {
-                background-color: #0d0d0d;
-            }
-
-            50% {
-                background-color: #1b5e20;
-            }
-
-            100% {
-                background-color: #0d0d0d;
-            }
-        }
-
-        .flash-success {
-            animation: flash-green 0.5s ease-out;
-        }
     </style>
 </head>
 
@@ -224,6 +206,16 @@
         }
 
         // --- FLIPBOOK PLAYER ---
+        let totalFrames = 150;
+        let consecutiveErrors = 0;
+
+        function loadFrameCount() {
+            fetch(`stable_run/info.json?v=${cacheBuster}`)
+                .then(r => r.json())
+                .then(data => { totalFrames = data.total; })
+                .catch(() => { });
+        }
+
         function playRecording() {
             if (isLive) return;
 
@@ -236,17 +228,31 @@
                 if (isLive) return;
                 IMG_El.src = path;
                 COUNTER_El.innerText = `Replay Frame: ${replayIndex}`;
+                consecutiveErrors = 0;
                 replayIndex++;
-                if (replayIndex > 150) replayIndex = 1;
+                if (replayIndex > totalFrames) replayIndex = 1;
             };
             img.onerror = () => {
-                if (replayIndex === 1) COUNTER_El.innerText = "No recordings found.";
-                replayIndex = 1;
+                consecutiveErrors++;
+                // Skip missing frames, but if too many in a row,
+                // loop back to start.
+                if (consecutiveErrors > 5) {
+                    if (replayIndex === 1) {
+                        COUNTER_El.innerText = "No recordings found.";
+                    }
+                    replayIndex = 1;
+                    consecutiveErrors = 0;
+                } else {
+                    replayIndex++;
+                    if (replayIndex > totalFrames) replayIndex = 1;
+                }
             };
         }
 
+        loadFrameCount();
+
         // --- SYSTEM CHECKER ---
-        let lastServerRunTime = 0;
+        let wasBusy = false;
         let isCheckInProgress = false;
         let lastCheckTime = 0;
 
@@ -279,6 +285,14 @@
                         BTN_Primary.className = "btn-blue";
                         BTN_Secondary.style.display = "none";
                     }
+
+                    // Detect new recording: busy went from true -> false
+                    if (wasBusy && !data.busy) {
+                        cacheBuster = Date.now();
+                        replayIndex = 1;
+                        loadFrameCount();
+                    }
+                    wasBusy = data.busy;
                 })
                 .catch(err => console.log("Status error", err));
 
@@ -291,6 +305,7 @@
                 if (!isLive) {
                     isLive = true;
                     clearInterval(replayTimer);
+                    replayTimer = null;
                     STATUS_El.className = "live";
                     STATUS_El.innerText = "● LIVE FEED ACTIVE";
                     IMG_El.src = `http://${PI_IP}:${STREAM_PORT}/?action=stream`;
@@ -304,6 +319,9 @@
                     STATUS_El.className = "idle";
                     STATUS_El.innerText = "System Idle - Last Capture";
                     cacheBuster = Date.now();
+                    replayIndex = 1;
+                    loadFrameCount();
+                    if (replayTimer) clearInterval(replayTimer);
                     replayTimer = setInterval(playRecording, 100);
                 }
             };

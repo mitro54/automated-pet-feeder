@@ -448,8 +448,13 @@ class SurveillanceSystem:
             self._safe_rmtree(TEMP_DIR)
             return
 
-        # Atomic buffer swap - retry to wait out web-server file locks.
-        print("[REC] Swapping buffers …")
+        # Write frame count so the flipbook player knows the real total.
+        info_path = os.path.join(TEMP_DIR, "info.json")
+        with open(info_path, "w") as fh:
+            json.dump({"frames": captured_frames, "total": target_frames}, fh)
+
+        # Buffer swap - move old recording out, new recording in.
+        print("[REC] Swapping buffers ...")
         trash_dir = os.path.join(BASE_DIR, "trash_bin")
         self._safe_rmtree(trash_dir)
 
@@ -457,11 +462,22 @@ class SurveillanceSystem:
             try:
                 os.rename(STABLE_DIR, trash_dir)
             except OSError:
+                # rename failed (web server holding a file handle).
+                # Try to delete instead.
                 self._safe_rmtree(STABLE_DIR)
+                if os.path.exists(STABLE_DIR):
+                    # Still couldn't remove it - abort swap, keep temp
+                    # for the next attempt rather than losing both.
+                    print("[WARN] Buffer swap aborted - stable_run locked.")
+                    return
 
-        shutil.move(TEMP_DIR, STABLE_DIR)
+        try:
+            shutil.move(TEMP_DIR, STABLE_DIR)
+        except OSError as exc:
+            print(f"[WARN] Buffer swap move failed: {exc}")
+            return
+
         self._safe_rmtree(trash_dir)
-
         print("[REC] Sequence Complete. Buffer Updated.")
 
     @staticmethod
