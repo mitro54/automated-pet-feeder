@@ -58,18 +58,18 @@ STREAM_CMD = (
 # Half-step sequence for the 28BYJ-48 (8 phases per electrical cycle).
 # 4096 half-steps = one full revolution (5.625° per step).
 HALF_STEP_SEQUENCE = [
-    [1, 0, 0, 0],
-    [1, 1, 0, 0],
-    [0, 1, 0, 0],
-    [0, 1, 1, 0],
-    [0, 0, 1, 0],
-    [0, 0, 1, 1],
-    [0, 0, 0, 1],
     [1, 0, 0, 1],
+    [0, 0, 0, 1],
+    [0, 0, 1, 1],
+    [0, 0, 1, 0],
+    [0, 1, 1, 0],
+    [0, 1, 0, 0],
+    [1, 1, 0, 0],
+    [1, 0, 0, 0],
 ]
 
 STEPS_PER_REVOLUTION = 4096
-STEP_DELAY = 0.002 # 2 ms
+STEP_DELAY = 0.005 # 5 ms
 
 
 class StepperMotor:
